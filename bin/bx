@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# BalaX dev tool: build, flash and talk to the robot over USB.
+# BalaX dev tool: build, flash and talk to the robot over USB or LAN.
 #
-#   tools/bx build              compile (incremental, cached)
-#   tools/bx flash              build, then flash the connected robot
-#   tools/bx monitor            serial console and logs; Ctrl+] quits
-#   tools/bx run                flash, then monitor
-#   tools/bx cmd <command>...   run console commands, e.g. tools/bx cmd "set volume 40" save reboot
-#   tools/bx gui                launch local web GUI dashboard for building, flashing, and tuning
-#   tools/bx erase              wipe the robot's flash, settings included
-#   tools/bx test               run the laptop tests (C++ and Python), no robot needed
-#   tools/bx preview            render the status screen to host/build/preview.png
-#   tools/bx idf <args>...      any idf.py command, with ESP-IDF set up
+#   tools/bx build                   compile (incremental, cached)
+#   tools/bx flash                   build, then flash the connected robot over USB
+#   tools/bx monitor                 USB serial console and logs; Ctrl+] quits
+#   tools/bx run                     USB flash, then monitor
+#   tools/bx cmd <command>...        run console commands over USB
+#   tools/bx lan-flash [ip]          build, then cryptographically flash over LAN (PBKDF2 + HMAC-SHA256)
+#   tools/bx lan-monitor [ip]        stream live logs over LAN (authenticated)
+#   tools/bx lan-cmd <ip> <cmd>...   run console commands over LAN (authenticated)
+#   tools/bx gui                     launch local web GUI dashboard for building, flashing, and tuning
+#   tools/bx dist [stable|dev]       package firmware into web/fw/<channel>/ for GitHub Pages & OTA
+#   tools/bx erase                   wipe the robot's flash, settings included
+#   tools/bx test                    run the laptop tests (C++ and Python), no robot needed
+#   tools/bx preview                 render the status screen to host/build/preview.png
+#   tools/bx idf <args>...           any idf.py command, with ESP-IDF set up
 #
-# BX_PORT picks the serial port when more than one is connected; BX_BAUD the flashing speed.
+# BX_PORT picks the USB serial port; BX_IP picks the default LAN IP address.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +25,7 @@ PINNED_IDF="$HOME/esp/$IDF_VERSION/esp-idf"
 FLASH_BAUD="${BX_BAUD:-1500000}"  # the M5StickC Plus USB chip's fastest reliable rate
 
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 setup_idf() {
@@ -85,8 +89,12 @@ robot_port() {
 
 # Firmware code that's plain C++, built for the laptop.
 HOST_BUILD="$REPO/host/build"
+SHARED_COMP="$HOME/gh/esp32-bot/tools/components"
+if [[ ! -d "$SHARED_COMP" ]]; then
+  SHARED_COMP="$REPO/components"
+fi
 HOST_FLAGS=(-std=c++23 -O2 -Wall -Wextra -Werror
-  -I"$REPO/components/gfx/include" -I"$REPO/components/m5stickc_plus/include" -I"$REPO/main")
+  -I"$SHARED_COMP/gfx/include" -I"$SHARED_COMP/m5stickc_plus/include" -I"$REPO/main")
 
 # The firmware's plain C++ logic, tested on the laptop.
 HOST_TESTED=("$REPO/main/balance.cpp" "$REPO/main/remote_protocol.cpp")
@@ -100,7 +108,7 @@ host_tests() {
 
 preview() {
   mkdir -p "$HOST_BUILD"
-  c++ "${HOST_FLAGS[@]}" "$REPO/host/preview.cpp" "$REPO/main/status_view.cpp" "$REPO/components/gfx/canvas.cpp" \
+  c++ "${HOST_FLAGS[@]}" "$REPO/host/preview.cpp" "$REPO/main/status_view.cpp" "$SHARED_COMP/gfx/canvas.cpp" \
     -lz -o "$HOST_BUILD/preview"
   "$HOST_BUILD/preview" "$HOST_BUILD/preview.png"
   echo "$HOST_BUILD/preview.png"
@@ -115,16 +123,20 @@ with_robot() {
 command="${1:-}"
 shift || true
 case "$command" in
-  build)   setup_idf; idf build ;;
-  flash)   setup_idf; with_robot flash ;;
-  monitor) setup_idf; with_robot monitor ;;
-  run)     setup_idf; with_robot flash monitor ;;
-  erase)   setup_idf; with_robot erase-flash ;;
-  idf)     setup_idf; idf "$@" ;;
-  cmd)     "$(idf_python)" "$REPO/tools/console.py" --port "$(robot_port)" "$@" ;;
-  gui)     python3 "$REPO/tools/gui.py" "$@" ;;
-  test)    host_tests; "$(idf_python)" -B -m unittest discover -s "$REPO/tools" "$@" ;;
-  preview) preview ;;
+  build)       setup_idf; idf build ;;
+  flash)       setup_idf; with_robot flash ;;
+  monitor)     setup_idf; with_robot monitor ;;
+  run)         setup_idf; with_robot flash monitor ;;
+  erase)       setup_idf; with_robot erase-flash ;;
+  idf)         setup_idf; idf "$@" ;;
+  cmd)         "$(idf_python)" "$REPO/tools/console.py" --port "$(robot_port)" "$@" ;;
+  lan-flash)   setup_idf; idf build; python3 "$REPO/tools/lan.py" flash "$@" ;;
+  lan-monitor) python3 "$REPO/tools/lan.py" monitor "$@" ;;
+  lan-cmd)     python3 "$REPO/tools/lan.py" cmd "$@" ;;
+  gui)         python3 "$REPO/tools/gui.py" "$@" ;;
+  dist)        python3 "$REPO/tools/dist.py" --channel "${1:-dev}" ;;
+  test)        host_tests; "$(idf_python)" -B -m unittest discover -s "$REPO/tools" "$@" ;;
+  preview)     preview ;;
   ""|help|-h|--help) usage ;;
-  *)       usage >&2; exit 1 ;;
+  *)           usage >&2; exit 1 ;;
 esac
