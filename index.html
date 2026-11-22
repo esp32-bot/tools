@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>esp32-bot — WebSerial Flasher & USB Tuner</title>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+  import { mountEsp32BotFlasher } from "./flasher.js";
+  mountEsp32BotFlasher({
+    target: "#app",
+    name: "esp32-bot",
+    repo: "esp32-bot/tools",
+    manifestBase: "https://esp32-bot.github.io/balax/fw",
+  });
+</script>
+</body>
+</html>
