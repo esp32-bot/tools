@@ -96,14 +96,13 @@ esp_err_t Display::init() {
 }
 
 esp_err_t Display::clear(uint16_t color) {
-    std::fill_n(rows_, WIDTH * BUFFER_ROWS, to_wire(color));
-    esp_err_t err = ESP_OK;
-    for (int y = 0; y < HEIGHT && err == ESP_OK; y += BUFFER_ROWS) {
-        err = flush(y, BUFFER_ROWS);
+    const esp_err_t err = fill_rect(0, 0, WIDTH, HEIGHT, color);
+    if (err == ESP_OK) {
+        std::array<uint16_t, WIDTH> row;
+        row.fill(color);
+        shown_.fill(row_hash(row));
+        shown_valid_ = true;
     }
-    std::array<uint16_t, WIDTH> row;
-    row.fill(color);
-    shown_.fill(row_hash(row));
     return err;
 }
 
@@ -111,12 +110,13 @@ esp_err_t Display::present(std::span<const uint16_t> frame) {
     if (frame.size() != static_cast<size_t>(WIDTH) * HEIGHT) {
         return ESP_ERR_INVALID_SIZE;
     }
-    esp_err_t err = ESP_OK;
+    if (!panel_ || !rows_) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = wait_for_flush();
     int pending = 0;  // changed rows in the buffer, waiting to be sent
     for (int y = 0; y < HEIGHT && err == ESP_OK; ++y) {
         const auto row = frame.subspan(y * WIDTH, WIDTH);
         const uint32_t hash = row_hash(row);
-        const bool changed = hash != shown_[y];
+        const bool changed = !shown_valid_ || hash != shown_[y];
         if (changed) {
             std::ranges::transform(row, rows_ + pending * WIDTH, to_wire);
             shown_[y] = hash;
@@ -125,24 +125,66 @@ esp_err_t Display::present(std::span<const uint16_t> frame) {
         // Send a run of changed rows when it ends, fills the buffer, or reaches the bottom.
         if (pending > 0 && (!changed || pending == BUFFER_ROWS || y == HEIGHT - 1)) {
             const int end = changed ? y + 1 : y;
-            err = flush(end - pending, pending);
+            err = flush(0, end - pending, WIDTH, pending);
             pending = 0;
         }
     }
-    if (err != ESP_OK) {
-        shown_.fill(0);  // unsure what's on the screen now, so send every row next time
+    shown_valid_ = err == ESP_OK;
+    return err;
+}
+
+esp_err_t Display::fill_rect(int x, int y, int w, int h, uint16_t color) {
+    if (!panel_ || !rows_) return ESP_ERR_INVALID_STATE;
+    if (w <= 0 || h <= 0) return ESP_OK;
+    const int right = static_cast<int>(std::clamp<int64_t>(static_cast<int64_t>(x) + w, 0, WIDTH));
+    const int bottom = static_cast<int>(std::clamp<int64_t>(static_cast<int64_t>(y) + h, 0, HEIGHT));
+    x = std::clamp(x, 0, WIDTH);
+    y = std::clamp(y, 0, HEIGHT);
+    w = right - x;
+    h = bottom - y;
+    if (w <= 0 || h <= 0) return ESP_OK;
+    esp_err_t err = wait_for_flush();
+    if (err != ESP_OK) return err;
+    shown_valid_ = false;
+    const int max_rows = WIDTH * BUFFER_ROWS / w;
+    std::fill_n(rows_, std::min(h, max_rows) * w, to_wire(color));
+    for (int cy = y; cy < bottom && err == ESP_OK;) {
+        const int chunk = std::min(max_rows, bottom - cy);
+        err = flush(x, cy, w, chunk);
+        cy += chunk;
     }
     return err;
 }
 
-// Sends the first `rows` rows of the buffer to the screen at `y`, and waits until the DMA
-// is done with the buffer.
-esp_err_t Display::flush(int y, int rows) {
-    esp_err_t err = esp_lcd_panel_draw_bitmap(panel_, 0, y, WIDTH, y + rows, rows_);
-    if (err == ESP_OK && xSemaphoreTake(flushed_, pdMS_TO_TICKS(FLUSH_TIMEOUT_MS)) != pdTRUE) {
-        err = ESP_ERR_TIMEOUT;
+esp_err_t Display::draw_pixels(int x, int y, int w, int h, const uint16_t* rgb565_native) {
+    if (!panel_ || !rows_) return ESP_ERR_INVALID_STATE;
+    if (!rgb565_native || x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT ||
+        w <= 0 || h <= 0 || w > WIDTH - x || h > HEIGHT - y) return ESP_ERR_INVALID_ARG;
+    const int total = w * h;
+    if (total > WIDTH * BUFFER_ROWS) return ESP_ERR_INVALID_SIZE;
+    const esp_err_t err = wait_for_flush();
+    if (err != ESP_OK) return err;
+    shown_valid_ = false;
+    std::transform(rgb565_native, rgb565_native + total, rows_, to_wire);
+    return flush(x, y, w, h);
+}
+
+esp_err_t Display::wait_for_flush() {
+    if (transfer_pending_) {
+        // A timeout does not cancel DMA. Keep the buffer intact until the callback arrives.
+        if (xSemaphoreTake(flushed_, pdMS_TO_TICKS(FLUSH_TIMEOUT_MS)) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
+        transfer_pending_ = false;
     }
-    return err;
+    return ESP_OK;
+}
+
+esp_err_t Display::flush(int x, int y, int w, int h) {
+    const esp_err_t err = esp_lcd_panel_draw_bitmap(panel_, x, y, x + w, y + h, rows_);
+    if (err != ESP_OK) return err;
+    transfer_pending_ = true;
+    return wait_for_flush();
 }
 
 bool Display::on_flushed(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void* self) {
