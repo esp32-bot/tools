@@ -2,7 +2,7 @@
 
 Shared ESP-IDF components, CLI tools, WebSerial browser flasher, and one-liner developer setup for [@esp32-bot](https://github.com/esp32-bot) robots (`balax`, `joyx`, etc.).
 
-## 1. Zero-Install Browser Flasher (For Family & Cousins)
+## 1. Zero-Install Browser Flasher
 
 No software install needed! Plug the robot into USB, open Chrome/Edge, and visit:
 - **BalaX Web Flasher & Live Tuner:** `https://esp32-bot.github.io/balax/`
