@@ -1,6 +1,7 @@
 #pragma once
 
-// Classic 5x7 font from Adafruit-GFX-Library (glcdfont.c, BSD license), printable ASCII only.
+// Classic 5x7 font from Adafruit-GFX-Library (glcdfont.c), printable ASCII only.
+// Copyright (c) 2012 Adafruit Industries. BSD license; full text in THIRD_PARTY_NOTICES.md.
 // 5 bytes per character, one per column, bit 0 at the top. Capitals and digits use the top 7
 // rows, descenders the 8th.
 
